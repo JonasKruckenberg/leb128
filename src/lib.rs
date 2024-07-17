@@ -11,13 +11,13 @@
 //!
 //! let mut buf = [0; 1024];
 //!
-//! // Write to anything that implements `std::io::Write`.
+//! // Write to anything that implements `alloc::vec::Vec`.
 //! {
 //!     let mut writable = &mut buf[..];
 //!     leb128::write::signed(&mut writable, -12345).expect("Should write number");
 //! }
 //!
-//! // Read from anything that implements `std::io::Read`.
+//! // Read from anything that implements `alloc::vec::Vec`.
 //! let mut readable = &buf[..];
 //! let val = leb128::read::signed(&mut readable).expect("Should read number");
 //! assert_eq!(val, -12345);
@@ -40,7 +40,10 @@
 //! assert_eq!(val, 98765);
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![deny(missing_docs)]
+
+extern crate alloc;
 
 #[doc(hidden)]
 pub const CONTINUATION_BIT: u8 = 1 << 7;
@@ -56,35 +59,27 @@ pub fn low_bits_of_byte(byte: u8) -> u8 {
 #[doc(hidden)]
 #[inline]
 pub fn low_bits_of_u64(val: u64) -> u8 {
-    let byte = val & (std::u8::MAX as u64);
+    let byte = val & (u8::MAX as u64);
     low_bits_of_byte(byte as u8)
 }
 
 /// A module for reading LEB128-encoded signed and unsigned integers.
 pub mod read {
+    use alloc::vec::Vec;
+
     use super::{low_bits_of_byte, CONTINUATION_BIT, SIGN_BIT};
-    use std::fmt;
-    use std::io;
+    use core::fmt;
 
     /// An error type for reading LEB128-encoded values.
     #[derive(Debug)]
     pub enum Error {
-        /// There was an underlying IO error.
-        IoError(io::Error),
         /// The number being read is larger than can be represented.
         Overflow,
-    }
-
-    impl From<io::Error> for Error {
-        fn from(e: io::Error) -> Self {
-            Error::IoError(e)
-        }
     }
 
     impl fmt::Display for Error {
         fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
             match *self {
-                Error::IoError(ref e) => e.fmt(f),
                 Error::Overflow => {
                     write!(f, "The number being read is larger than can be represented")
                 }
@@ -92,41 +87,47 @@ pub mod read {
         }
     }
 
-    impl std::error::Error for Error {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    #[cfg(feature = "nightly")]
+    impl core::error::Error for Error {
+        fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
             match *self {
-                Error::IoError(ref e) => Some(e),
                 Error::Overflow => None,
             }
         }
     }
 
-    /// Read an unsigned LEB128-encoded number from the `std::io::Read` stream
+    #[cfg(feature = "std")]
+    impl std::error::Error for Error {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match *self {
+                Error::Overflow => None,
+            }
+        }
+    }
+
+    /// Read an unsigned LEB128-encoded number from the `alloc::vec::Vec`
     /// `r`.
     ///
     /// On success, return the number.
-    pub fn unsigned<R>(r: &mut R) -> Result<u64, Error>
-    where
-        R: ?Sized + io::Read,
-    {
+    pub fn unsigned(r: &mut Vec<u8>) -> Result<u64, Error> {
         let mut result = 0;
         let mut shift = 0;
+        let mut byte;
 
         loop {
-            let mut buf = [0];
-            r.read_exact(&mut buf)?;
+            byte = r.swap_remove(0);
 
-            if shift == 63 && buf[0] != 0x00 && buf[0] != 0x01 {
-                while buf[0] & CONTINUATION_BIT != 0 {
-                    r.read_exact(&mut buf)?;
+            if shift == 63 && byte != 0x00 && byte != 0x01 {
+                while byte & CONTINUATION_BIT != 0 {
+                    byte = r.swap_remove(0);
                 }
                 return Err(Error::Overflow);
             }
 
-            let low_bits = low_bits_of_byte(buf[0]) as u64;
+            let low_bits = low_bits_of_byte(byte) as u64;
             result |= low_bits << shift;
 
-            if buf[0] & CONTINUATION_BIT == 0 {
+            if byte & CONTINUATION_BIT == 0 {
                 return Ok(result);
             }
 
@@ -134,26 +135,21 @@ pub mod read {
         }
     }
 
-    /// Read a signed LEB128-encoded number from the `std::io::Read` stream `r`.
+    /// Read a signed LEB128-encoded number from the `alloc::vec::Vec` `r`.
     ///
     /// On success, return the number.
-    pub fn signed<R>(r: &mut R) -> Result<i64, Error>
-    where
-        R: ?Sized + io::Read,
-    {
+    pub fn signed(r: &mut Vec<u8>) -> Result<i64, Error> {
         let mut result = 0;
         let mut shift = 0;
         let size = 64;
         let mut byte;
 
         loop {
-            let mut buf = [0];
-            r.read_exact(&mut buf)?;
+            byte = r.swap_remove(0);
 
-            byte = buf[0];
             if shift == 63 && byte != 0x00 && byte != 0x7f {
-                while buf[0] & CONTINUATION_BIT != 0 {
-                    r.read_exact(&mut buf)?;
+                while byte & CONTINUATION_BIT != 0 {
+                    byte = r.swap_remove(0);
                 }
                 return Err(Error::Overflow);
             }
@@ -179,15 +175,11 @@ pub mod read {
 /// A module for writing LEB128-encoded signed and unsigned integers.
 pub mod write {
     use super::{low_bits_of_u64, CONTINUATION_BIT};
-    use std::io;
 
-    /// Write `val` to the `std::io::Write` stream `w` as an unsigned LEB128 value.
+    /// Write `val` to the `alloc::vec::Vec` `w` as an unsigned LEB128 value.
     ///
     /// On success, return the number of bytes written to `w`.
-    pub fn unsigned<W>(w: &mut W, mut val: u64) -> Result<usize, io::Error>
-    where
-        W: ?Sized + io::Write,
-    {
+    pub fn unsigned(w: &mut alloc::vec::Vec<u8>, mut val: u64) -> usize {
         let mut bytes_written = 0;
         loop {
             let mut byte = low_bits_of_u64(val);
@@ -197,23 +189,19 @@ pub mod write {
                 byte |= CONTINUATION_BIT;
             }
 
-            let buf = [byte];
-            w.write_all(&buf)?;
+            w.push(byte);
             bytes_written += 1;
 
             if val == 0 {
-                return Ok(bytes_written);
+                return bytes_written;
             }
         }
     }
 
-    /// Write `val` to the `std::io::Write` stream `w` as a signed LEB128 value.
+    /// Write `val` to the `alloc::vec::Vec` `w` as a signed LEB128 value.
     ///
     /// On success, return the number of bytes written to `w`.
-    pub fn signed<W>(w: &mut W, mut val: i64) -> Result<usize, io::Error>
-    where
-        W: ?Sized + io::Write,
-    {
+    pub fn signed(w: &mut alloc::vec::Vec<u8>, mut val: i64) -> usize {
         let mut bytes_written = 0;
         loop {
             let mut byte = val as u8;
@@ -229,12 +217,11 @@ pub mod write {
                 byte |= CONTINUATION_BIT;
             }
 
-            let buf = [byte];
-            w.write_all(&buf)?;
+            w.push(byte);
             bytes_written += 1;
 
             if done {
-                return Ok(bytes_written);
+                return bytes_written;
             }
         }
     }

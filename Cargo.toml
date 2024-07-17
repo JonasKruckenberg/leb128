@@ -1,5 +1,8 @@
 [package]
-authors = ["Nick Fitzgerald <fitzgen@gmail.com>", "Philip Craig <philipjcraig@gmail.com>"]
+authors = [
+    "Nick Fitzgerald <fitzgen@gmail.com>",
+    "Philip Craig <philipjcraig@gmail.com>",
+]
 name = "leb128"
 version = "0.2.5"
 edition = "2018"
@@ -19,4 +22,6 @@ exclude = ["/.travis.yml", "/.coveralls.yml", "/format"]
 quickcheck = "0.8.0"
 
 [features]
+default = ["std"]
+std = []
 nightly = []
